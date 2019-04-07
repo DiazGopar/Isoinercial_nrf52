@@ -1,0 +1,6 @@
+{
+    "board": "adafruit:nrf52:feather52840",
+    "configuration": "softdevice=s140v6,debug=l0",
+    "port": "/dev/cu.usbmodem1442301",
+    "sketch": "Isoinercial/Isoinercial.ino"
+}

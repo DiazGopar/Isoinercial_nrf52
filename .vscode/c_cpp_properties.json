@@ -1,0 +1,23 @@
+{
+    "configurations": [
+        {
+            "name": "Mac",
+            "includePath": [
+                "/Users/gopar/Library/Arduino15/packages/adafruit/tools/**",
+                "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.9.3/**",
+                "/Users/gopar/Documents/Arduino/libraries/**",
+                "${workspaceFolder}/Isoinercial"
+            ],
+            "forcedInclude": [],
+            "macFrameworkPath": [
+                "/System/Library/Frameworks",
+                "/Library/Frameworks"
+            ],
+            "intelliSenseMode": "clang-x64",
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}
