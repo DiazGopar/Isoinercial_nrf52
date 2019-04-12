@@ -2,7 +2,7 @@
 #include <bluefruit.h>
 #include <SPI.h>
 #include <LS7366.h>
-#include <SoftwareSerial.h> //TODO: Lets try hardware Serial1
+//#include <SoftwareSerial.h> //TODO: Lets try hardware Serial1
 #include <Adafruit_NeoPixel.h>
 
 
@@ -38,7 +38,7 @@
  */
 
 LS7366 myLS7366(LS7366_CS_PIN);  //10 is the chip select pin.
-SoftwareSerial mySerial(SERIAL_RX_PIN, SERIAL_TX_PIN); // RX, TX
+//SoftwareSerial mySerial(SERIAL_RX_PIN, SERIAL_TX_PIN); // RX, TX
 Adafruit_NeoPixel signalLed = Adafruit_NeoPixel(5, NEOMATRIX_LED_PIN, NEO_GRB + NEO_KHZ800);
 
 
@@ -46,7 +46,7 @@ Adafruit_NeoPixel signalLed = Adafruit_NeoPixel(5, NEOMATRIX_LED_PIN, NEO_GRB + 
 uint32_t encoderPosition = 0, lastEncoderPosition = 0;
 uint32_t timeelapsed = 0;
 uint8_t lastBatteryVoltagePer = 0;
-int8_t volatile IncEncoderData;
+int8_t volatile IncEncoderData = 0;
 int batteryVoltageRaw;
 bool isDeviceNotifyingEncoderData = false;
 bool isDeviceNotifyingBatteryData = false;
@@ -54,6 +54,7 @@ bool isDeviceNotifyingBatteryData = false;
 //
 SoftwareTimer readBatteryTimer;
 SoftwareTimer encoderChronoJumpSerial;
+// SemaphoreHandle_t xMutex;
 
 
 /**
@@ -156,8 +157,10 @@ void serial_chronojump_callback(TimerHandle_t xTimerID)
 {
   // freeRTOS timer ID, ignored if not used
   (void) xTimerID;
-
-  mySerial.write(IncEncoderData);
+  taskENTER_CRITICAL();
+  Serial1.write(IncEncoderData);
+  IncEncoderData &= 0;
+  taskEXIT_CRITICAL();
 }
 
 /**
@@ -251,8 +254,14 @@ void connect_callback(uint16_t conn_handle)
 
   //Read battery Value
   batteryVoltageRaw = readVBAT(ADC_SAMPLES);
-  Serial.print("Battery value: ");
+  uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
+  batteryBleChar.notify8(batteryVoltagePer);
+  batteryBleChar.write8(batteryVoltagePer);
+
+  Serial.print("Battery value mv: ");
   Serial.println(batteryVoltageRaw);
+  Serial.print("Battery value %: ");
+  Serial.println(batteryVoltagePer);
   Serial.print("Connected to ");
   Serial.println(central_name);
 }
@@ -375,8 +384,9 @@ void setup() {
   
   Serial.begin(115200);
   //while ( !Serial ) delay(10);   // for nrf52840 with native usb
-  mySerial.begin(115200);
-  mySerial.println("Chronojump serial port enabled!!");
+  Serial1.begin(115200);
+  //mySerial.begin(115200);
+  //mySerial.println("Chronojump serial port enabled!!");
 
   SPI.begin();
   // Init encoder chip
@@ -499,11 +509,14 @@ void loop() {
   if(batteryVoltagePer != lastBatteryVoltagePer) {
       Serial.println("Battery value changed!");
       batteryBleChar.write8(batteryVoltagePer);
+      batteryBleChar.notify8(batteryVoltagePer);
       
   }
 
+  taskENTER_CRITICAL();
   encoderPosition = myLS7366.read_counter();
   IncEncoderData = encoderPosition - lastEncoderPosition;
+  taskEXIT_CRITICAL();
 
   if (!Bluefruit.Advertising.isRunning()) {
     
