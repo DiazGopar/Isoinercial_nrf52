@@ -6,7 +6,6 @@
 #include <Adafruit_NeoPixel.h>
 
 
-
 #define VBAT_MV_PER_LSB             (0.73242188F)   // 3.0V ADC range and 12-bit ADC resolution = 3000mV/4096
 #define VBAT_DIVIDER                (0.5F)          // 100K + 100K voltage divider on VBAT = (100K / (100K + 100K))
 #define VBAT_DIVIDER_COMP           (2.0F)          // Compensation factor for the VBAT divider
