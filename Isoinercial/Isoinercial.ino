@@ -12,6 +12,16 @@
 #define ADC_SAMPLES                 (20)            // Number of samples in ADC read
 #define VBAT_READ_INTERVAL          (300000)        // 300000 ms = 5 minutes read battery interval
 #define CHRONOJUMP_SERIAL_INTERVAL  (1)             // 1ms interval Serial Output data to chronojump
+
+#define QUADMOD1X                   (1)
+#define QUADMOD2X                   (2)
+#define QUADMOD4X                   (4)
+
+#define NUMBYTES1                   (1)
+#define NUMBYTES2                   (2)
+#define NUMBYTES3                   (3)
+#define NUMBYTES4                   (4)
+
 /**
  * @brief PIN definitions
  * 
@@ -28,7 +38,7 @@
  * #define BCD_CHARGER_PIN          4             // P0.04 Output is LOW when Battery Charge Detect, indicates when the device is connected to a dedicated battery charger. 
  * #define ANALOG_ENABLE_PIN        6             // P0.06 Put this PIN LOW to measure the battery voltage level. Keep voltage HIGH while not reading, then put LOW, read and come back to HIGH. If we missed to put high, the voltage divider disconnect in about 2ms.
  * #define LIPO_LEVEL_ANALOG_PIN    29            // P0.29 Voltage divider to read battery voltage
- * #define INT_PIN                  7             // P0.07 This PIN is input we must put Pull-UP. When The push button received a power-off signal go LOW. We can use to read short pulse signal.
+ * #define INT_PIN                  7             // P0.07 This PIN is input we must put Pull-UP. When The push button received a power-off signal go LOW. We can use to read short pulse signal. {1=> Ignore, 2=> Enter Serial Mode, 3=> Exit Serial Mode, 4=> Enter DFU Mode, LONG=> Force power OFF}
  * #define DFLAG_PIN                40            // P1.08 This PIN goes LOW with every INDEX encoder count.
  * #define SS_LS7366_PIN            41            // P1.09 This is the Slave Select PIN for LS7366 chip
  * #define SERIAL_TX_PIN            
@@ -36,6 +46,37 @@
  * #define NEOPIX_PIN               16            // P0.16 RGB Led Data Pin.
  *    
  */
+
+/**
+ * @brief BLUETOOTH COMMANDS definitions 
+ *  
+ */
+#define COMMAND_GET_BATTERY         (0x42)        // 'B','66' Command to do a battery voltage read
+#define COMMAND_OTA                 (0x40)        // '@','64' Command to enter DFU OTA mode    
+#define COMMAND_RESET_COUNTER       (0x23)        // '#','35' Command to Reset Encoder counter to Cero 
+#define COMMAND_SERIAL_OFF          (0x29)        // ')','41' Command to Disable Serial Output
+#define COMMAND_SERIAL_ON           (0x28)        // '(','40' Command to enable Serial output
+#define COMMAND_TURN_LED            (0x4C)        // 'L','76' Command to ENABLE/DISABLE the Led
+#define COMMAND_ENCODER_1X          (0x3C)        // '<','60' Command to put encoder on 1X mode
+#define COMMAND_ENCODER_2X          (0x3D)        // '=','61' Command to put encoder on 2X mode
+#define COMMAND_ENCODER_4X          (0x3E)        // '>','62' Command to put encoder on 3X mode
+#define COMMAND_ENCODER_OUTPUT_2    (0x32)        // '2','50' Command to put output encoder data to 2 bytes
+#define COMMAND_EMCODER_OUTPUT_3    (0x33)        // '3','51' Command to put output encoder data to 3 bytes
+#define COMMAND_ENCODER_OUTPUT_4    (0x34)        // '4','52' Command to put output encoder data to 4 bytes
+#define COMMAND_DEFAULT_CONFIG      (0x21)        // '!','33' Command to put default configuration values
+#define COMMAND_SIMULATE_DATA       (0x25)        // '%'.'37' Command to put device in ouput simulated data
+
+
+/**
+ * @brief CHRONOJUMP Serial commands
+ * 
+ */
+#define SER_COMMAND_ENCODER         (0x4A)        // 'J','74' ChronoJump Software asking for encoder presence
+#define SER_COMMAND_SOFT_VER        (0x56)        // 'V','86' ChronoJump Get software version
+
+
+
+
 
 LS7366 myLS7366(LS7366_CS_PIN);  //10 is the chip select pin.
 //SoftwareSerial mySerial(SERIAL_RX_PIN, SERIAL_TX_PIN); // RX, TX
@@ -47,9 +88,16 @@ uint32_t encoderPosition = 0, lastEncoderPosition = 0;
 uint32_t timeelapsed = 0;
 uint8_t lastBatteryVoltagePer = 0;
 int8_t volatile IncEncoderData = 0;
-int batteryVoltageRaw;
+int volatile batteryVoltageRaw;
 bool isDeviceNotifyingEncoderData = false;
 bool isDeviceNotifyingBatteryData = false;
+
+uint8_t quadMode = QUADMOD4X;
+bool isIndexMode = false;
+uint8_t numBytesMode = NUMBYTES4;
+
+bool isSerialEnable = true;
+bool isSimulatedState = false;
 
 //
 SoftwareTimer readBatteryTimer;
@@ -90,6 +138,8 @@ void initEncoderChip(uint8_t quadratureMode = 4, bool isIndexEnable = false, uin
     register_1 += BYTE_2;
   } else if(numBytes == 3) {
     register_1 += BYTE_3;
+  } else if(numBytes == 4) {
+    register_1 += BYTE_4;
   }
 
   
@@ -108,8 +158,8 @@ void initEncoderChip(uint8_t quadratureMode = 4, bool isIndexEnable = false, uin
  */
 
 int readVBAT(uint8_t numRead) {
-  int raw;
-  int rawVoltage;
+  int raw = 0;
+  int rawVoltage = 0;
  
   // Set the analog reference to 3.0V (default = 3.6V)
   analogReference(AR_INTERNAL_3_0);
@@ -122,6 +172,7 @@ int readVBAT(uint8_t numRead) {
   for(uint8_t i=0;i<numRead;i++) {
     // Get the raw 12-bit, 0..3000mV ADC value
     rawVoltage += analogRead(VBAT_PIN);
+    Serial.println(rawVoltage);
   }
   
   raw = rawVoltage / numRead;
@@ -173,11 +224,11 @@ void serial_chronojump_callback(TimerHandle_t xTimerID)
 uint8_t mvToPercent(float mvolts) {
     uint8_t battery_level;
 
-    if(mvolts > 4200) {
+    if(mvolts > 4100) {
         battery_level = 100;
     } else if (mvolts >= 4000)
     {
-        battery_level = 100 - (4180 - mvolts) / 20;
+        battery_level = 100 - (4100 - mvolts) / 10;
     }
     else if (mvolts > 3900)
     {
@@ -233,6 +284,91 @@ void write_command(BLECharacteristic& chr, uint8_t* data, uint16_t len, uint16_t
 {
   Serial.print("Received a value: ");
   Serial.println(data[0]);
+
+  BaseType_t active = xTimerIsTimerActive(encoderChronoJumpSerial.getHandle());
+
+  if(len>0){
+    switch (data[0])
+    {
+
+    case COMMAND_DEFAULT_CONFIG:
+      isSerialEnable = true;
+      if(!active) {
+        encoderChronoJumpSerial.start();
+      }
+      numBytesMode = NUMBYTES4;
+      isIndexMode = false;
+      quadMode = QUADMOD4X;
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      isSimulatedState = false;
+      break;
+
+    case COMMAND_SIMULATE_DATA:
+      isSimulatedState = true;
+      break;
+
+    case COMMAND_TURN_LED:
+      break;
+
+    case COMMAND_GET_BATTERY:
+      break;
+
+    case COMMAND_OTA:
+      enterOTADfu();
+      break;
+    
+    case COMMAND_SERIAL_ON:    
+      if(!active) {
+        encoderChronoJumpSerial.start();
+      }
+      isSerialEnable = true;
+      break;
+
+    case COMMAND_SERIAL_OFF:
+      if(active) {
+        encoderChronoJumpSerial.stop();
+      }
+      isSerialEnable = false;
+      break;
+
+    case COMMAND_RESET_COUNTER:
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      break;
+      
+    case COMMAND_ENCODER_1X:
+      quadMode = QUADMOD1X;
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      break;
+
+    case COMMAND_ENCODER_2X:
+      quadMode = QUADMOD2X;
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      break;
+
+    case COMMAND_ENCODER_4X:
+      quadMode = QUADMOD4X;
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      break;
+
+    case COMMAND_ENCODER_OUTPUT_2:
+      numBytesMode = NUMBYTES2;
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      break;
+
+    case COMMAND_EMCODER_OUTPUT_3:
+      numBytesMode = NUMBYTES3;
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      break;
+
+    case COMMAND_ENCODER_OUTPUT_4:
+      numBytesMode = NUMBYTES4;
+      initEncoderChip(quadMode,isIndexMode,numBytesMode);
+
+    default:
+      break;
+    }
+  }
+
 }
 
 /**
@@ -254,7 +390,9 @@ void connect_callback(uint16_t conn_handle)
 
   //Read battery Value
   batteryVoltageRaw = readVBAT(ADC_SAMPLES);
+  
   uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
+
   batteryBleChar.notify8(batteryVoltagePer);
   batteryBleChar.write8(batteryVoltagePer);
 
@@ -285,7 +423,7 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
   Serial.println(reason);
   Serial.println("Advertising!");
 
-  //TODO: Stop actives timers
+  //Stop actives timers
   BaseType_t active = xTimerIsTimerActive(readBatteryTimer.getHandle());
   if(active) {
     readBatteryTimer.stop();
@@ -368,6 +506,43 @@ void startAdv(void)
   Bluefruit.Advertising.setFastTimeout(30);      // number of seconds in fast mode
   Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds  
 }
+/**
+ * @brief Function to print out one byte in a readable, left-padded binary format 
+ * 
+ * @param val 
+ */
+
+void print_binary(byte val)
+{
+  byte i=0;
+  for (i=0;i<8;i++){
+    if (val & (0x01 << (7-i))) {
+      Serial.print("1");
+    } else {
+      Serial.print("0");
+    }
+    if (i==3) Serial.print("_");
+  }
+}
+
+/**
+ * @brief Output a simulated sinusoidal value
+ * 
+ * @param time 
+ * @param period Repetition duration in milliseconds
+ * @param heigth Max number of points  
+ * @return int32_t 
+ */
+
+int32_t fn(uint32_t actualTime, float period, uint16_t heigth)
+{
+  
+  float iteration = fmod((float) actualTime , period);
+  float angle = ((iteration / period) * 2 * PI) + PI;
+  float result = ((cos(angle) + 1) / 2) * heigth;
+  
+  return result;
+}
 
 void setup() {
 
@@ -399,10 +574,10 @@ void setup() {
 
   //Battery
   // Get a raw ADC reading
-  int vbat_raw = readVBAT(ADC_SAMPLES);
+  batteryVoltageRaw = readVBAT(ADC_SAMPLES);
  
   // Convert from raw mv to percentage (based on LIPO chemistry)
-  uint8_t vbat_per = mvToPercent(vbat_raw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
+  uint8_t vbat_per = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
 
   // Init Bluefruit
   Bluefruit.begin();
@@ -430,6 +605,7 @@ void setup() {
   //batteryBleChar.setReadAuthorizeCallback(batteryReadCallback);
   batteryBleChar.begin();
   batteryBleChar.write8(vbat_per);
+  batteryBleChar.notify8(vbat_per);
   
   // Configure and Start the Device Information Service
   Serial.println("Configuring the Device Information Service");
@@ -473,50 +649,35 @@ void setup() {
   //Timer Creation related
   readBatteryTimer.begin(VBAT_READ_INTERVAL,read_battery_callback);
   encoderChronoJumpSerial.begin(CHRONOJUMP_SERIAL_INTERVAL, serial_chronojump_callback);
-  encoderChronoJumpSerial.start();
-  
-  //Task Creation related
-  //BaseType_t xReturned;
-
-  /* Create the task, storing the handle. */
-  
-  //xReturned = xTaskCreate(
-  //                vTaskCode,       /* Function that implements the task. */
-  //                "READ_BAT",          /* Text name for the task. */
-  //                STACK_SIZE,      /* Stack size in words, not bytes. */
-  //                ( void * ) 1,    /* Parameter passed into the task. */
-  //                tskIDLE_PRIORITY,/* Priority at which the task is created. */
-  //                &xHandleBatteryRead );      /* Used to pass out the created task's handle. */
-
-  //  if( xReturned == pdPASS ) {
-      /* The task was created.  Use the task's handle to pause the task. */
-  //    vTaskSuspend( xHandleBatteryRead );
-  //  }
-
-  
+  if(isSerialEnable) {
+    encoderChronoJumpSerial.start();
+  }
 }
 
 void loop() {
 
   timeelapsed = millis();
   uint32_t dummy_data[2] = {timeelapsed , encoderPosition};
-  // Convert from raw mv to percentage (based on LIPO chemistry)
-  
+  // Convert from raw mv to percentage (based on LIPO chemistry)  
   uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
 
-  //Serial.println(batteryVoltagePer);
-
   if(batteryVoltagePer != lastBatteryVoltagePer) {
-      Serial.println("Battery value changed!");
       batteryBleChar.write8(batteryVoltagePer);
       batteryBleChar.notify8(batteryVoltagePer);
       
   }
 
-  taskENTER_CRITICAL();
-  encoderPosition = myLS7366.read_counter();
-  IncEncoderData = encoderPosition - lastEncoderPosition;
-  taskEXIT_CRITICAL();
+  if(!isSimulatedState) {
+    taskENTER_CRITICAL();
+    encoderPosition = myLS7366.read_counter();
+    IncEncoderData += encoderPosition - lastEncoderPosition;
+    taskEXIT_CRITICAL();
+  } else {
+    taskENTER_CRITICAL();
+    encoderPosition = fn(timeelapsed,2500,5000);
+    IncEncoderData += encoderPosition - lastEncoderPosition;
+    taskEXIT_CRITICAL();
+  }
 
   if (!Bluefruit.Advertising.isRunning()) {
     
@@ -539,42 +700,3 @@ void loop() {
   lastBatteryVoltagePer = batteryVoltagePer;
 
 }
-
-/**
- * @brief Function to print out one byte in a readable, left-padded binary format 
- * 
- * @param val 
- */
-
-void print_binary(byte val)
-{
-  byte i=0;
-  for (i=0;i<8;i++){
-    if (val & (0x01 << (7-i))) {
-      Serial.print("1");
-    } else {
-      Serial.print("0");
-    }
-    if (i==3) Serial.print("_");
-  }
-}
-
-/**
- * @brief Output a simulated sinusoidal value
- * 
- * @param time 
- * @param period Repetition duration in milliseconds
- * @param heigth Max number of points  
- * @return int32_t 
- */
-
-int32_t fn(uint32_t time, float period, uint16_t heigth)
-{
-  
-  float iteration = fmod((float) time , period);
-  float angle = ((iteration / period) * 2 * PI) + PI;
-  float result = ((cos(angle) + 1) / 2) * heigth;
-  
-  return result;
-}
-
