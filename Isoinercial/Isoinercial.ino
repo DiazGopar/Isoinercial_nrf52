@@ -172,7 +172,6 @@ int readVBAT(uint8_t numRead) {
   for(uint8_t i=0;i<numRead;i++) {
     // Get the raw 12-bit, 0..3000mV ADC value
     rawVoltage += analogRead(VBAT_PIN);
-    Serial.println(rawVoltage);
   }
   
   raw = rawVoltage / numRead;
@@ -180,7 +179,7 @@ int readVBAT(uint8_t numRead) {
   analogReference(AR_DEFAULT);
   analogReadResolution(10);
   
-  //Serial.println(raw);
+  Serial.println(raw);
   return raw;
 }
 
@@ -221,6 +220,7 @@ void serial_chronojump_callback(TimerHandle_t xTimerID)
  * @return uint8_t 
  */
 
+//TODO: Refactor this function to use a 3 lines aproximation
 uint8_t mvToPercent(float mvolts) {
     uint8_t battery_level;
 
@@ -236,15 +236,15 @@ uint8_t mvToPercent(float mvolts) {
     }
     else if (mvolts > 3700)
     {
-        battery_level = 80 - (3900 - mvolts) / 20;
+        battery_level = 80 - (3900 - mvolts) / 10;
     }
     else if (mvolts > 3500)
     {
-        battery_level = 60 - (3700 - mvolts) / 20;
+        battery_level = 60 - (3700 - mvolts) / 10;
     }
     else if (mvolts > 3200)
     {
-        battery_level = 40 - (3500 - mvolts) / 30;
+        battery_level = 40 - (3500 - mvolts) / 8;
     }
     else
     {
@@ -304,7 +304,7 @@ void write_command(BLECharacteristic& chr, uint8_t* data, uint16_t len, uint16_t
       break;
 
     case COMMAND_SIMULATE_DATA:
-      isSimulatedState = true;
+      isSimulatedState = !isSimulatedState;
       break;
 
     case COMMAND_TURN_LED:
@@ -393,7 +393,7 @@ void connect_callback(uint16_t conn_handle)
   
   uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
 
-  batteryBleChar.notify8(batteryVoltagePer);
+  //batteryBleChar.notify8(batteryVoltagePer);
   batteryBleChar.write8(batteryVoltagePer);
 
   Serial.print("Battery value mv: ");
@@ -469,6 +469,10 @@ void cccd_callback(BLECharacteristic& chr, uint16_t cccd_value)
       if (chr.notifyEnabled()) {
             Serial.println("Battery Data Measurement 'Notify' enabled");
             isDeviceNotifyingBatteryData = true;
+            batteryVoltageRaw = readVBAT(ADC_SAMPLES); 
+            uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
+            batteryBleChar.notify8(batteryVoltagePer);
+            batteryBleChar.write8(batteryVoltagePer);
             readBatteryTimer.start(); //Enable a timer to read battery value and notify value
         } else {
             Serial.println("Battery Data Measurement 'Notify' disabled");
@@ -486,7 +490,7 @@ void startAdv(void)
   Bluefruit.Advertising.addTxPower();
   
   // Include Encoder 128-bit uuid
-  Bluefruit.Advertising.addService(bleencoders);
+  Bluefruit.Advertising.addService(bleencoders,blebas,bledis);
 
   // Secondary Scan Response packet (optional)
   // Since there is no room for 'Name' in Advertising packet
@@ -663,7 +667,7 @@ void loop() {
 
   if(batteryVoltagePer != lastBatteryVoltagePer) {
       batteryBleChar.write8(batteryVoltagePer);
-      batteryBleChar.notify8(batteryVoltagePer);
+      //batteryBleChar.notify8(batteryVoltagePer);
       
   }
 
