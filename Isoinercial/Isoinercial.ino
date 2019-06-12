@@ -280,7 +280,7 @@ BLECharacteristic encoderwrite2 = BLECharacteristic(encoderwritelegacycharac);
 
 BLECharacteristic batteryBleChar = BLECharacteristic(UUID16_CHR_BATTERY_LEVEL);
 
-void write_command(BLECharacteristic& chr, uint8_t* data, uint16_t len, uint16_t offset)
+void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len)
 {
   Serial.print("Received a value: ");
   Serial.println(data[0]);
@@ -380,7 +380,10 @@ void write_command(BLECharacteristic& chr, uint8_t* data, uint16_t len, uint16_t
 void connect_callback(uint16_t conn_handle)
 {
   char central_name[32] = { 0 };
-  Bluefruit.Gap.getPeerName(conn_handle, central_name, sizeof(central_name));
+  //Bluefruit.getPeerName(conn_handle, central_name, sizeof(central_name));
+
+  BLEConnection* connection = Bluefruit.Connection(conn_handle);
+  connection->getPeerName(central_name,sizeof(central_name));
   
   // off Blue LED for lowest power consumption
   Bluefruit._setConnLed(false);
@@ -431,7 +434,7 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
 
 }
 
-void batteryReadCallback(BLECharacteristic& chr, ble_gatts_evt_read_t * request)
+void batteryReadCallback(BLECharacteristic* chr, ble_gatts_evt_read_t * request)
 {
   Serial.println("Read battery request received");
   //sd_ble_gatts_rw_authorize_reply(request->handle, )
@@ -447,7 +450,7 @@ void batteryReadCallback(BLECharacteristic& chr, ble_gatts_evt_read_t * request)
  * @param cccd_value 
  */
 
-void cccd_callback(BLECharacteristic& chr, uint16_t cccd_value)
+void cccd_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_value)
 {
     // Display the raw request packet
     Serial.print("CCCD Updated: ");
@@ -457,16 +460,16 @@ void cccd_callback(BLECharacteristic& chr, uint16_t cccd_value)
     
     // Check the characteristic this CCCD update is associated with in case
     // this handler is used for multiple CCCD records.
-    if (chr.uuid == encoderread.uuid) {
-        if (chr.notifyEnabled()) {
+    if (chr->uuid == encoderread.uuid) {
+        if (chr->notifyEnabled()) {
             Serial.println("Encoder Data Measurement 'Notify' enabled");
             isDeviceNotifyingEncoderData = true;
         } else {
             Serial.println("Encoder Data Measurement 'Notify' disabled");
             isDeviceNotifyingEncoderData = false;
         }
-    } else if (chr.uuid == batteryBleChar.uuid) {
-      if (chr.notifyEnabled()) {
+    } else if (chr->uuid == batteryBleChar.uuid) {
+      if (chr->notifyEnabled()) {
             Serial.println("Battery Data Measurement 'Notify' enabled");
             isDeviceNotifyingBatteryData = true;
             batteryVoltageRaw = readVBAT(ADC_SAMPLES); 
@@ -594,8 +597,8 @@ void setup() {
   Bluefruit.setName("Isoinercial");
 
   // Set the connect/disconnect callback handlers
-  Bluefruit.setConnectCallback(connect_callback);
-  Bluefruit.setDisconnectCallback(disconnect_callback);
+  Bluefruit.Periph.setConnectCallback(connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
 
   
   // Start the BLE Battery Service and set it to their value
@@ -605,7 +608,7 @@ void setup() {
   batteryBleChar.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY); // could support notify
   batteryBleChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   batteryBleChar.setFixedLen(1);
-  batteryBleChar.setCccdWriteCallback(cccd_callback);
+  batteryBleChar.setCccdWriteCallback(cccd_callback, true);
   //batteryBleChar.setReadAuthorizeCallback(batteryReadCallback);
   batteryBleChar.begin();
   batteryBleChar.write8(vbat_per);
@@ -629,14 +632,14 @@ void setup() {
   encoderread.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   encoderread.setUserDescriptor("Data from encoder");
   encoderread.setFixedLen(8);
-  encoderread.setCccdWriteCallback(cccd_callback);  // Optionally capture CCCD updates
+  encoderread.setCccdWriteCallback(cccd_callback, true);  // Optionally capture CCCD updates
   encoderread.begin();
 
   encoderwrite1.setProperties(CHR_PROPS_READ | CHR_PROPS_WRITE | CHR_PROPS_WRITE_WO_RESP);
   encoderwrite1.setPermission(SECMODE_OPEN, SECMODE_OPEN);
   encoderwrite1.setUserDescriptor("Commands");
   encoderwrite1.setFixedLen(1);
-  encoderwrite1.setWriteCallback(write_command);
+  encoderwrite1.setWriteCallback(write_command, true);
   encoderwrite1.begin();
 
   encoderwrite2.setProperties(CHR_PROPS_WRITE);
