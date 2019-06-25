@@ -75,7 +75,7 @@
 #define SER_COMMAND_SOFT_VER        (0x56)        // 'V','86' ChronoJump Get software version
 
 
-
+#define MAX_PRPH_CONNECTION   3
 
 
 LS7366 myLS7366(LS7366_CS_PIN);  //10 is the chip select pin.
@@ -98,6 +98,9 @@ uint8_t numBytesMode = NUMBYTES4;
 
 bool isSerialEnable = true;
 bool isSimulatedState = false;
+
+uint8_t connection_count = 0;
+uint16_t connectionHandles[MAX_PRPH_CONNECTION];
 
 //
 SoftwareTimer readBatteryTimer;
@@ -405,6 +408,32 @@ void connect_callback(uint16_t conn_handle)
   Serial.println(batteryVoltagePer);
   Serial.print("Connected to ");
   Serial.println(central_name);
+  connection_count++;
+  Serial.print("Connection count: ");
+  Serial.println(connection_count);
+
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    if(connectionHandles[i] == BLE_CONN_HANDLE_INVALID) {
+      connectionHandles[i] = conn_handle;
+      break;
+    }
+  }
+
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    Serial.print("Element ");
+    Serial.print(i);
+    Serial.print(" ");
+    Serial.println(connectionHandles[i]);
+  }
+
+
+
+  // Keep advertising if not reaching max
+  if (connection_count < MAX_PRPH_CONNECTION) {
+    Serial.println("Keep advertising");
+    Bluefruit.Advertising.start(0);
+  }
+
 }
 
 /**
@@ -415,9 +444,7 @@ void connect_callback(uint16_t conn_handle)
  */
 void disconnect_callback(uint16_t conn_handle, uint8_t reason)
 {
-  (void) conn_handle;
-  (void) reason;
-
+  
   // ON Blue LED for advertising indicate
   Bluefruit.autoConnLed(true);
   Bluefruit._startConnLed();
@@ -426,10 +453,35 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
   Serial.println(reason);
   Serial.println("Advertising!");
 
+  connection_count--;
+  
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    if(connectionHandles[i] == conn_handle) {
+      connectionHandles[i] = BLE_CONN_HANDLE_INVALID;
+      break;
+    }
+  }
+
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    Serial.print("Element ");
+    Serial.print(i);
+    Serial.print(" ");
+    Serial.println(connectionHandles[i]);
+  }
+  
+  // Keep advertising if not reaching max
+  if (connection_count < MAX_PRPH_CONNECTION)
+  {
+    Serial.println("Keep advertising");
+    Bluefruit.Advertising.start(0);
+  }
+
   //Stop actives timers
-  BaseType_t active = xTimerIsTimerActive(readBatteryTimer.getHandle());
-  if(active) {
-    readBatteryTimer.stop();
+  if(connection_count < 1){
+    BaseType_t active = xTimerIsTimerActive(readBatteryTimer.getHandle());
+    if(active) {
+      readBatteryTimer.stop();
+    }
   }
 
 }
@@ -461,7 +513,7 @@ void cccd_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_valu
     // Check the characteristic this CCCD update is associated with in case
     // this handler is used for multiple CCCD records.
     if (chr->uuid == encoderread.uuid) {
-        if (chr->notifyEnabled()) {
+        if (cccd_value) {
             Serial.println("Encoder Data Measurement 'Notify' enabled");
             isDeviceNotifyingEncoderData = true;
         } else {
@@ -469,14 +521,18 @@ void cccd_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_valu
             isDeviceNotifyingEncoderData = false;
         }
     } else if (chr->uuid == batteryBleChar.uuid) {
-      if (chr->notifyEnabled()) {
+      if (cccd_value) {
             Serial.println("Battery Data Measurement 'Notify' enabled");
             isDeviceNotifyingBatteryData = true;
             batteryVoltageRaw = readVBAT(ADC_SAMPLES); 
             uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
             batteryBleChar.notify8(batteryVoltagePer);
             batteryBleChar.write8(batteryVoltagePer);
-            readBatteryTimer.start(); //Enable a timer to read battery value and notify value
+            BaseType_t active = xTimerIsTimerActive(readBatteryTimer.getHandle());
+            if(!active) {
+              readBatteryTimer.start(); //Enable a timer to read battery value and notify value
+            }
+            
         } else {
             Serial.println("Battery Data Measurement 'Notify' disabled");
             isDeviceNotifyingBatteryData = false;
@@ -553,6 +609,11 @@ int32_t fn(uint32_t actualTime, float period, uint16_t heigth)
 
 void setup() {
 
+  //Clean Connected devices table
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    connectionHandles[i] = BLE_CONN_HANDLE_INVALID;
+  }
+
   // configure D7 as input with a pullup (pin is active low)
   //pinMode(34, INPUT_PULLUP); ???? MISTAKE
   pinMode(LS7366_CS_PIN, OUTPUT);
@@ -565,7 +626,7 @@ void setup() {
   signalLed.show();
   
   Serial.begin(115200);
-  //while ( !Serial ) delay(10);   // for nrf52840 with native usb
+  while ( !Serial ) delay(10);   // for nrf52840 with native usb
   Serial1.begin(115200);
   //mySerial.begin(115200);
   //mySerial.println("Chronojump serial port enabled!!");
@@ -587,7 +648,7 @@ void setup() {
   uint8_t vbat_per = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
 
   // Init Bluefruit
-  Bluefruit.begin();
+  Bluefruit.begin(MAX_PRPH_CONNECTION);
 
   Bluefruit.autoConnLed(true);
   Bluefruit.setConnLedInterval(100);
@@ -686,12 +747,14 @@ void loop() {
     taskEXIT_CRITICAL();
   }
 
-  if (!Bluefruit.Advertising.isRunning()) {
+  //if (!Bluefruit.Advertising.isRunning()) {
     
     //Encoder related changes of data
     if(isDeviceNotifyingEncoderData) { 
       if(encoderPosition != lastEncoderPosition) {          
-        encoderread.notify(dummy_data,sizeof(dummy_data));
+        //encoderread.notify(dummy_data,sizeof(dummy_data));
+        notifyAllDevices(dummy_data, sizeof(dummy_data));
+        Serial.print(".");
       }
     }
 
@@ -701,9 +764,17 @@ void loop() {
         batteryBleChar.notify8(batteryVoltagePer);
       }
     } 
-  }
+  //}
 
   lastEncoderPosition = encoderPosition;
   lastBatteryVoltagePer = batteryVoltagePer;
 
+}
+
+void notifyAllDevices(const void* data, uint16_t len) {
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    if(connectionHandles[i] != BLE_CONN_HANDLE_INVALID) {
+      encoderread.notify(connectionHandles[i], data, len);
+    }
+  }  
 }
