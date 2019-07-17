@@ -3,9 +3,8 @@
         {
             "name": "Mac",
             "includePath": [
-                "/Users/gopar/Documents/Arduino/libraries/LS7366-master",
                 "/Users/gopar/Library/Arduino15/packages/adafruit/tools/**",
-                "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.9.3/**"
+                "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.11.1/**"
             ],
             "forcedInclude": [],
             "macFrameworkPath": [

@@ -9,7 +9,7 @@
 #define VBAT_MV_PER_LSB             (0.73242188F)   // 3.0V ADC range and 12-bit ADC resolution = 3000mV/4096
 #define VBAT_DIVIDER                (0.5F)          // 100K + 100K voltage divider on VBAT = (100K / (100K + 100K))
 #define VBAT_DIVIDER_COMP           (2.0F)          // Compensation factor for the VBAT divider
-#define ADC_SAMPLES                 (20)            // Number of samples in ADC read
+#define ADC_SAMPLES                 (10)            // Number of samples in ADC read
 #define VBAT_READ_INTERVAL          (300000)        // 300000 ms = 5 minutes read battery interval
 #define CHRONOJUMP_SERIAL_INTERVAL  (1)             // 1ms interval Serial Output data to chronojump
 
@@ -26,11 +26,17 @@
  * @brief PIN definitions
  * 
  */
-#define VBAT_PIN                    (A6)            //Battery voltage measure -A6 in nrf52840 -A7 in nrf52832
+#define VBAT_PIN                    (20)            // A6 - P0.29 Voltage divider to read battery voltage 
 #define SERIAL_TX_PIN               (A1)
 #define SERIAL_RX_PIN               (A0)
-#define LS7366_CS_PIN               (10)
-#define NEOMATRIX_LED_PIN           (5)            // D2 Pin for Led Strip          
+#define LS7366_CS_PIN               (13)            // D13 - P1.09 This is the Slave Select PIN for LS7366 chip
+#define NEOMATRIX_LED_PIN           (8)             // P0.16 RGB Led Data Pin.    
+#define VBAT_ENABLE_PIN             (11)            // D11 - P0.06 Put this PIN LOW to measure the battery voltage level. Keep voltage HIGH while not reading, then put LOW, read and come back to HIGH. If we missed to put high, the voltage divider disconnect in about 2ms.
+#define PWREN_PIN                   (9)             // D9 - P0.26 Output is LOW after the device has been configured by USB, then high during USB suspend mode. This output can be used to control power to external logic P-Channel logic level MOSFET switch. Enable the interface pull-down option when using the PWREN# in this way.  
+#define BCD_CHARGER_PIN             (14)            // A0 - P0.04 Output is LOW when Battery Charge Detect, indicates when the device is connected to a dedicated battery charger. 
+#define INT_PIN                     (12)            // D12 - P0.08 This PIN is input we must put Pull-UP. When The push button received a power-off signal go LOW. We can use to read short pulse signal. {1=> Ignore, 2=> Enter Serial Mode, 3=> Exit Serial Mode, 4=> Enter DFU Mode, LONG=> Force power OFF}
+#define DFLAG_PIN                   (5)             // D5 - P1.08 This PIN goes LOW with every INDEX encoder count.
+#define KILL_PIN                    (6)             // D6 - P0.07 This PIN can shutdown the system. Must be tied to HIGH while system is poweron, and go to LOW whe we want to shutdown.
 
 /**
  * @brief PIN DEFINITIONS 
@@ -66,6 +72,8 @@
 #define COMMAND_DEFAULT_CONFIG      (0x21)        // '!','33' Command to put default configuration values
 #define COMMAND_SIMULATE_DATA       (0x25)        // '%'.'37' Command to put device in ouput simulated data
 
+#define COMMAND_SHUTDOWN            (0xDE)        // ''.'' Command to shutdown device
+
 
 /**
  * @brief CHRONOJUMP Serial commands
@@ -78,7 +86,7 @@
 #define MAX_PRPH_CONNECTION   3
 
 
-LS7366 myLS7366(LS7366_CS_PIN);  //10 is the chip select pin.
+LS7366 myLS7366(LS7366_CS_PIN);  
 //SoftwareSerial mySerial(SERIAL_RX_PIN, SERIAL_TX_PIN); // RX, TX
 Adafruit_NeoPixel signalLed = Adafruit_NeoPixel(5, NEOMATRIX_LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -93,7 +101,7 @@ bool isDeviceNotifyingEncoderData = false;
 bool isDeviceNotifyingBatteryData = false;
 
 uint8_t quadMode = QUADMOD4X;
-bool isIndexMode = false;
+bool isIndexMode = true; //TODO: Change to false to production ready
 uint8_t numBytesMode = NUMBYTES4;
 
 bool isSerialEnable = true;
@@ -101,10 +109,16 @@ bool isSimulatedState = false;
 
 uint8_t connection_count = 0;
 uint16_t connectionHandles[MAX_PRPH_CONNECTION];
+uint8_t encoderNotifyConn = 0;
+uint16_t encoderNotifyConnHdls[MAX_PRPH_CONNECTION];
+uint8_t batteryNotifyConn = 0;
+uint16_t batteryNotifyConnHdls[MAX_PRPH_CONNECTION];
 
 //
-SoftwareTimer readBatteryTimer;
-SoftwareTimer encoderChronoJumpSerial;
+SoftwareTimer tm_blinkSignalLed;
+SoftwareTimer tm_readBattery;
+SoftwareTimer tm_encoderChronoJumpSerial;
+
 // SemaphoreHandle_t xMutex;
 
 
@@ -164,6 +178,7 @@ int readVBAT(uint8_t numRead) {
   int raw = 0;
   int rawVoltage = 0;
  
+  //digitalWrite(VBAT_ENABLE_PIN,LOW);
   // Set the analog reference to 3.0V (default = 3.6V)
   analogReference(AR_INTERNAL_3_0);
  
@@ -171,16 +186,20 @@ int readVBAT(uint8_t numRead) {
   analogReadResolution(12); // Can be 8, 10, 12 or 14
  
   // Let the ADC settle
-  delay(1);
+  digitalWrite(VBAT_ENABLE_PIN,LOW);
+  //delay(3);
   for(uint8_t i=0;i<numRead;i++) {
     // Get the raw 12-bit, 0..3000mV ADC value
-    rawVoltage += analogRead(VBAT_PIN);
+    int aux = analogRead(VBAT_PIN);
+    Serial.println(aux);
+    rawVoltage += aux;
   }
   
   raw = rawVoltage / numRead;
   // Set the ADC back to the default settings
   analogReference(AR_DEFAULT);
   analogReadResolution(10);
+  digitalWrite(VBAT_ENABLE_PIN,HIGH);
   
   Serial.println(raw);
   return raw;
@@ -215,7 +234,56 @@ void serial_chronojump_callback(TimerHandle_t xTimerID)
   IncEncoderData &= 0;
   taskEXIT_CRITICAL();
 }
+/**
+ * @brief Callback from Timer to blink Signal Led
+ * 
+ * @param xTimerID 
+ */
 
+void blinkSignalLed_callback(TimerHandle_t xTimerID)
+{
+  static bool ledOn=false;
+  (xTimerID);
+  uint8_t r,g,b;
+
+  switch(connection_count) {
+    case 0 : 
+      r = g = 0;
+      b = 255;
+    break;
+    
+    case 1 :
+      r = 41;
+      g = 121;
+      b = 255;
+    break;
+
+    case 2 :
+      r = 101;
+      g = 31;
+      b = 255;
+    break;
+
+    case 3 : //Not happens
+      r = 213;
+      g = 0;
+      b = 249;
+    break;
+
+  }
+
+  if(ledOn){
+    signalLed.setPixelColor(0, 0, 0, 0);
+    signalLed.setBrightness(16);
+    signalLed.show();  
+  } else {
+    signalLed.setPixelColor(0, r, g, b);
+    signalLed.setBrightness(16);
+    signalLed.show();  
+  }
+  ledOn = !ledOn;
+  //Serial.print('/');
+}
 /**
  * @brief Convert battery voltage from Milivolts to Percentage 
  * 
@@ -288,7 +356,7 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
   Serial.print("Received a value: ");
   Serial.println(data[0]);
 
-  BaseType_t active = xTimerIsTimerActive(encoderChronoJumpSerial.getHandle());
+  BaseType_t active = xTimerIsTimerActive(tm_encoderChronoJumpSerial.getHandle());
 
   if(len>0){
     switch (data[0])
@@ -297,7 +365,7 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
     case COMMAND_DEFAULT_CONFIG:
       isSerialEnable = true;
       if(!active) {
-        encoderChronoJumpSerial.start();
+        tm_encoderChronoJumpSerial.start();
       }
       numBytesMode = NUMBYTES4;
       isIndexMode = false;
@@ -322,14 +390,14 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
     
     case COMMAND_SERIAL_ON:    
       if(!active) {
-        encoderChronoJumpSerial.start();
+        tm_encoderChronoJumpSerial.start();
       }
       isSerialEnable = true;
       break;
 
     case COMMAND_SERIAL_OFF:
       if(active) {
-        encoderChronoJumpSerial.stop();
+        tm_encoderChronoJumpSerial.stop();
       }
       isSerialEnable = false;
       break;
@@ -366,7 +434,12 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
     case COMMAND_ENCODER_OUTPUT_4:
       numBytesMode = NUMBYTES4;
       initEncoderChip(quadMode,isIndexMode,numBytesMode);
+      break;
 
+    case COMMAND_SHUTDOWN:
+      digitalWrite(KILL_PIN, LOW);
+      break;
+    
     default:
       break;
     }
@@ -419,6 +492,12 @@ void connect_callback(uint16_t conn_handle)
     }
   }
 
+  if(connection_count>=MAX_PRPH_CONNECTION){
+    tm_blinkSignalLed.stop();
+    //Max connection reached
+    ledAvertisingConnected();
+  }
+
   for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
     Serial.print("Element ");
     Serial.print(i);
@@ -458,7 +537,12 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
   for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
     if(connectionHandles[i] == conn_handle) {
       connectionHandles[i] = BLE_CONN_HANDLE_INVALID;
-      break;
+    }
+    if(encoderNotifyConnHdls[i] == conn_handle) {
+      encoderNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
+    }
+    if(batteryNotifyConnHdls[i] == conn_handle) {
+      batteryNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
     }
   }
 
@@ -474,13 +558,15 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
   {
     Serial.println("Keep advertising");
     Bluefruit.Advertising.start(0);
+    Serial.println("Keep Blinking!");
+    tm_blinkSignalLed.start();
   }
 
   //Stop actives timers
   if(connection_count < 1){
-    BaseType_t active = xTimerIsTimerActive(readBatteryTimer.getHandle());
+    BaseType_t active = xTimerIsTimerActive(tm_readBattery.getHandle());
     if(active) {
-      readBatteryTimer.stop();
+      tm_readBattery.stop();
     }
   }
 
@@ -516,29 +602,57 @@ void cccd_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_valu
         if (cccd_value) {
             Serial.println("Encoder Data Measurement 'Notify' enabled");
             isDeviceNotifyingEncoderData = true;
+            encoderNotifyConn++;
+            for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+              if(encoderNotifyConnHdls[i] == BLE_CONN_HANDLE_INVALID) {
+                encoderNotifyConnHdls[i] = conn_hdl;
+                break;
+              }
+            }
         } else {
             Serial.println("Encoder Data Measurement 'Notify' disabled");
-            isDeviceNotifyingEncoderData = false;
+            (encoderNotifyConn > 0) ? encoderNotifyConn-- : encoderNotifyConn &= 0;
+            for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+              if(encoderNotifyConnHdls[i] == conn_hdl) {
+                encoderNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
+              }
+            }
+            if(encoderNotifyConn < 1) {
+              isDeviceNotifyingEncoderData = false;
+            }
         }
     } else if (chr->uuid == batteryBleChar.uuid) {
       if (cccd_value) {
-            Serial.println("Battery Data Measurement 'Notify' enabled");
-            isDeviceNotifyingBatteryData = true;
-            batteryVoltageRaw = readVBAT(ADC_SAMPLES); 
-            uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
-            batteryBleChar.notify8(batteryVoltagePer);
-            batteryBleChar.write8(batteryVoltagePer);
-            BaseType_t active = xTimerIsTimerActive(readBatteryTimer.getHandle());
-            if(!active) {
-              readBatteryTimer.start(); //Enable a timer to read battery value and notify value
-            }
-            
-        } else {
-            Serial.println("Battery Data Measurement 'Notify' disabled");
-            isDeviceNotifyingBatteryData = false;
-            readBatteryTimer.stop(); //Disable a timer to read battery value
-            //NOTE: Disconnect dont disable the timer.
-        } 
+        Serial.println("Battery Data Measurement 'Notify' enabled");
+        isDeviceNotifyingBatteryData = true;
+        batteryVoltageRaw = readVBAT(ADC_SAMPLES); 
+        uint8_t batteryVoltagePer = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
+        batteryBleChar.notify8(batteryVoltagePer);
+        batteryBleChar.write8(batteryVoltagePer);
+        batteryNotifyConn++;
+        for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+          if(batteryNotifyConnHdls[i] == BLE_CONN_HANDLE_INVALID) {
+            batteryNotifyConnHdls[i] = conn_hdl;
+            break;
+          }
+        }
+        BaseType_t active = xTimerIsTimerActive(tm_readBattery.getHandle()); 
+        if(!active) {
+          tm_readBattery.start(); //Enable a timer to read battery value and notify value
+        }          
+      } else {
+        Serial.println("Battery Data Measurement 'Notify' disabled");
+        (batteryNotifyConn > 0) ? batteryNotifyConn-- : batteryNotifyConn &= 0;
+        for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+          if(batteryNotifyConnHdls[i] == conn_hdl) {
+            batteryNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
+          }
+        }
+        if(batteryNotifyConn < 1) {
+          isDeviceNotifyingBatteryData = false;
+          tm_readBattery.stop(); //Disable a timer to read battery value
+        }
+      } 
     }
 }
 
@@ -568,6 +682,10 @@ void startAdv(void)
   Bluefruit.Advertising.setInterval(32, 244);    // in unit of 0.625 ms
   Bluefruit.Advertising.setFastTimeout(30);      // number of seconds in fast mode
   Bluefruit.Advertising.start(0);                // 0 = Don't stop advertising after n seconds  
+
+  delay(500);
+
+  ledAvertisingInit();
 }
 /**
  * @brief Function to print out one byte in a readable, left-padded binary format 
@@ -616,14 +734,32 @@ void setup() {
 
   // configure D7 as input with a pullup (pin is active low)
   //pinMode(34, INPUT_PULLUP); ???? MISTAKE
-  pinMode(LS7366_CS_PIN, OUTPUT);
+  pinMode(KILL_PIN, OUTPUT); //Configuring PIN to shutdown the system via software
+  digitalWrite(KILL_PIN, HIGH);
+  pinMode(LS7366_CS_PIN, OUTPUT); //Configuring PIN fro LS7366 Chip select
+  pinMode(VBAT_ENABLE_PIN, OUTPUT); //Configuring Pin to activate the battery resistor bridge
+  digitalWrite(VBAT_ENABLE_PIN,HIGH);
+  pinMode(INT_PIN, INPUT); //Configuring ON/OFF push button interrupt pin. It must have a external pullup resistor
+  attachInterrupt(INT_PIN, digital_pushbutton_callback, ISR_DEFERRED | CHANGE);
+  pinMode(DFLAG_PIN, INPUT);
+  attachInterrupt(DFLAG_PIN, encoderEventCbk, ISR_DEFERRED | CHANGE);
+  pinMode(PWREN_PIN, INPUT);
+  attachInterrupt(PWREN_PIN, powerenableEventCbk, ISR_DEFERRED | CHANGE);
+  pinMode(BCD_CHARGER_PIN, INPUT);
+  attachInterrupt(BCD_CHARGER_PIN, chargerEventCbk, ISR_DEFERRED | CHANGE);
+
 
   // Configure Signal LED
   signalLed.begin();
   signalLed.show(); // Initialize all pixels to 'off'
-  signalLed.setPixelColor(0, 255, 0, 255);
-  signalLed.setBrightness(16);
+  signalLed.setPixelColor(0, 255, 255, 255);
+  signalLed.setBrightness(255);
   signalLed.show();
+  delay(100);
+  signalLed.setPixelColor(0, 0, 0, 0);
+  signalLed.setBrightness(255);
+  signalLed.show();
+
   
   Serial.begin(115200);
   while ( !Serial ) delay(10);   // for nrf52840 with native usb
@@ -709,17 +845,30 @@ void setup() {
   encoderwrite2.setFixedLen(1);
   encoderwrite2.begin();
  
+
+
+  //Timer Creation related
+  tm_blinkSignalLed.begin(500,blinkSignalLed_callback);
+  Serial.print("Led timer handle ");
+  Serial.println((int32_t) tm_blinkSignalLed.getHandle());
+  
+  tm_readBattery.begin(VBAT_READ_INTERVAL,read_battery_callback);
+  //tm_readBattery.begin(500,blinkSignalLed_callback);
+  Serial.print("Battery timer handle ");
+  Serial.println((int32_t) tm_readBattery.getHandle());
+  
+  tm_encoderChronoJumpSerial.begin(CHRONOJUMP_SERIAL_INTERVAL, serial_chronojump_callback);
+  Serial.print("Serial timer handle ");
+  Serial.println((int32_t) tm_encoderChronoJumpSerial.getHandle());
+  if(isSerialEnable) {
+    tm_encoderChronoJumpSerial.start();
+  }
+
   // Set up and start advertising
   startAdv();
   Bluefruit.printInfo();
   Serial.println("Advertising!");
-
-  //Timer Creation related
-  readBatteryTimer.begin(VBAT_READ_INTERVAL,read_battery_callback);
-  encoderChronoJumpSerial.begin(CHRONOJUMP_SERIAL_INTERVAL, serial_chronojump_callback);
-  if(isSerialEnable) {
-    encoderChronoJumpSerial.start();
-  }
+  
 }
 
 void loop() {
@@ -761,7 +910,8 @@ void loop() {
     //Battery related changes of data
     if(batteryVoltagePer != lastBatteryVoltagePer) {
       if(isDeviceNotifyingBatteryData) {
-        batteryBleChar.notify8(batteryVoltagePer);
+        //batteryBleChar.notify8(batteryVoltagePer);
+        notifyBatteryAllDevices(lastBatteryVoltagePer);
       }
     } 
   //}
@@ -777,4 +927,55 @@ void notifyAllDevices(const void* data, uint16_t len) {
       encoderread.notify(connectionHandles[i], data, len);
     }
   }  
+}
+
+void notifyBatteryAllDevices(uint8_t data) 
+{
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    if(connectionHandles[i] != BLE_CONN_HANDLE_INVALID) {
+      batteryBleChar.notify8(connectionHandles[i], data);
+    }
+  }
+}
+
+void digital_pushbutton_callback(void)
+{
+  Serial.print("Pin value: ");
+  Serial.println(digitalRead(INT_PIN));
+}
+
+void encoderEventCbk(void)
+{
+  Serial.print("DFLAG value: ");
+  Serial.println(digitalRead(DFLAG_PIN));
+}
+
+void powerenableEventCbk(void)
+{
+  Serial.print("PWREN_PIN value: ");
+  Serial.println(digitalRead(PWREN_PIN));  
+}
+
+void chargerEventCbk(void)
+{
+  Serial.print("BCD_CHARGER_PIN value: ");
+  Serial.println(digitalRead(BCD_CHARGER_PIN));  
+}
+
+void ledAvertisingInit(void)
+{
+  Serial.println("Init blinking!!");
+  BaseType_t active = xTimerIsTimerActive(tm_blinkSignalLed.getHandle());
+  
+  if(!active) {
+    tm_blinkSignalLed.start();
+  }
+  //Serial.println("Init blinking!!");
+}
+
+void ledAvertisingConnected(void)
+{
+  signalLed.setPixelColor(0, 0, 0, 255);
+  signalLed.setBrightness(16);
+  signalLed.show();    
 }

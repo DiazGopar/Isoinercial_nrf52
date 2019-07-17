@@ -1,7 +1,7 @@
 {
     "board": "adafruit:nrf52:feather52840",
     "configuration": "softdevice=s140v6,debug=l0",
-    "port": "/dev/cu.usbmodem14524101",
+    "port": "/dev/cu.usbmodem14524201",
     "sketch": "Isoinercial/Isoinercial.ino",
     "programmer": "USBtinyISP"
 }
