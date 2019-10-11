@@ -2,7 +2,6 @@
 #include <bluefruit.h>
 #include <SPI.h>
 #include <LS7366.h>
-//#include <SoftwareSerial.h> //TODO: Lets try hardware Serial1
 #include <Adafruit_NeoPixel.h>
 
 
@@ -12,6 +11,7 @@
 #define ADC_SAMPLES                 (10)            // Number of samples in ADC read
 #define VBAT_READ_INTERVAL          (300000)        // 300000 ms = 5 minutes read battery interval
 #define CHRONOJUMP_SERIAL_INTERVAL  (1)             // 1ms interval Serial Output data to chronojump
+#define TIMEOUT_POWEROFF            (300000)        // 300000 ms = 5 minutes before to power off
 
 #define QUADMOD1X                   (1)
 #define QUADMOD2X                   (2)
@@ -67,13 +67,18 @@
 #define COMMAND_ENCODER_2X          (0x3D)        // '=','61' Command to put encoder on 2X mode
 #define COMMAND_ENCODER_4X          (0x3E)        // '>','62' Command to put encoder on 3X mode
 #define COMMAND_ENCODER_OUTPUT_2    (0x32)        // '2','50' Command to put output encoder data to 2 bytes
-#define COMMAND_EMCODER_OUTPUT_3    (0x33)        // '3','51' Command to put output encoder data to 3 bytes
+#define COMMAND_ENCODER_OUTPUT_3    (0x33)        // '3','51' Command to put output encoder data to 3 bytes
 #define COMMAND_ENCODER_OUTPUT_4    (0x34)        // '4','52' Command to put output encoder data to 4 bytes
 #define COMMAND_DEFAULT_CONFIG      (0x21)        // '!','33' Command to put default configuration values
 #define COMMAND_SIMULATE_DATA       (0x25)        // '%'.'37' Command to put device in ouput simulated data
 
 #define COMMAND_SHUTDOWN            (0xDE)        // ''.'' Command to shutdown device
 
+
+/**
+ * @brief Characteristics define not in Bluefruit libraries
+ */
+#define UUID16_CHR_BATTERY_POWER_STATE (0x2A1A)
 
 /**
  * @brief CHRONOJUMP Serial commands
@@ -96,9 +101,14 @@ uint32_t encoderPosition = 0, lastEncoderPosition = 0;
 uint32_t timeelapsed = 0;
 uint8_t lastBatteryVoltagePer = 0;
 int8_t volatile IncEncoderData = 0;
+uint8_t batteryPowerState = 0B10001111;//org.bluetooth.characteristic.battery_power_state
 int volatile batteryVoltageRaw;
 bool isDeviceNotifyingEncoderData = false;
 bool isDeviceNotifyingBatteryData = false;
+bool isDeviceNotifyingBatteryPowerStateData = false;
+bool usbPowerStatus = false;
+bool batteryDischargingStatus = true;
+bool usbConnectedStatus = false;
 
 uint8_t quadMode = QUADMOD4X;
 bool isIndexMode = true; //TODO: Change to false to production ready
@@ -113,11 +123,14 @@ uint8_t encoderNotifyConn = 0;
 uint16_t encoderNotifyConnHdls[MAX_PRPH_CONNECTION];
 uint8_t batteryNotifyConn = 0;
 uint16_t batteryNotifyConnHdls[MAX_PRPH_CONNECTION];
+uint8_t batteryPowerStateConn = 0;
+uint16_t batteryPowerStateNotifyConnHdls[MAX_PRPH_CONNECTION];
 
 //
 SoftwareTimer tm_blinkSignalLed;
 SoftwareTimer tm_readBattery;
 SoftwareTimer tm_encoderChronoJumpSerial;
+SoftwareTimer tm_watchDogPowerOff;
 
 // SemaphoreHandle_t xMutex;
 
@@ -273,9 +286,7 @@ void blinkSignalLed_callback(TimerHandle_t xTimerID)
   }
 
   if(ledOn){
-    signalLed.setPixelColor(0, 0, 0, 0);
-    signalLed.setBrightness(16);
-    signalLed.show();  
+    ledAdvertisingOff(); 
   } else {
     signalLed.setPixelColor(0, r, g, b);
     signalLed.setBrightness(16);
@@ -284,6 +295,23 @@ void blinkSignalLed_callback(TimerHandle_t xTimerID)
   ledOn = !ledOn;
   //Serial.print('/');
 }
+
+/**
+ * @brief PowerOff Microcontroller lowering ltc2955 pin 
+ * 
+ * @param  
+ * @return void 
+ */
+void powerOff(TimerHandle_t xTimerID)
+{
+  Serial.println("Powering OFF");
+  Serial.flush();
+  ledAdvertisingOff();
+  delay(100);
+  digitalWrite(KILL_PIN, LOW);  
+}
+
+
 /**
  * @brief Convert battery voltage from Milivolts to Percentage 
  * 
@@ -350,6 +378,7 @@ BLECharacteristic encoderwrite1 = BLECharacteristic(encoderwritecharac);
 BLECharacteristic encoderwrite2 = BLECharacteristic(encoderwritelegacycharac);
 
 BLECharacteristic batteryBleChar = BLECharacteristic(UUID16_CHR_BATTERY_LEVEL);
+BLECharacteristic batteryBlePowerStateChar = BLECharacteristic(UUID16_CHR_BATTERY_POWER_STATE);
 
 void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uint16_t len)
 {
@@ -426,7 +455,7 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
       initEncoderChip(quadMode,isIndexMode,numBytesMode);
       break;
 
-    case COMMAND_EMCODER_OUTPUT_3:
+    case COMMAND_ENCODER_OUTPUT_3:
       numBytesMode = NUMBYTES3;
       initEncoderChip(quadMode,isIndexMode,numBytesMode);
       break;
@@ -437,7 +466,7 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
       break;
 
     case COMMAND_SHUTDOWN:
-      digitalWrite(KILL_PIN, LOW);
+      powerOff(0);
       break;
     
     default:
@@ -505,14 +534,14 @@ void connect_callback(uint16_t conn_handle)
     Serial.println(connectionHandles[i]);
   }
 
-
-
   // Keep advertising if not reaching max
   if (connection_count < MAX_PRPH_CONNECTION) {
     Serial.println("Keep advertising");
     Bluefruit.Advertising.start(0);
   }
 
+  //Disable Power Off
+  tm_watchDogPowerOff.stop();
 }
 
 /**
@@ -568,6 +597,7 @@ void disconnect_callback(uint16_t conn_handle, uint8_t reason)
     if(active) {
       tm_readBattery.stop();
     }
+    tm_watchDogPowerOff.start();
   }
 
 }
@@ -653,7 +683,42 @@ void cccd_callback(uint16_t conn_hdl, BLECharacteristic* chr, uint16_t cccd_valu
           tm_readBattery.stop(); //Disable a timer to read battery value
         }
       } 
+    } else if(chr->uuid == batteryBlePowerStateChar.uuid) {
+      if(cccd_value) { //subscribe
+        Serial.println("Battery Power State 'Notify' enabled");
+        isDeviceNotifyingBatteryPowerStateData = true;
+        batteryPowerStateConn++;
+        for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+          if(batteryPowerStateNotifyConnHdls[i] == BLE_CONN_HANDLE_INVALID) {
+            batteryPowerStateNotifyConnHdls[i] = conn_hdl;
+            break;
+          }
+        }
+      } else { //unsubscribe
+        Serial.println("Battery Power State 'Notify' disabled");
+        (batteryPowerStateConn > 0) ? batteryPowerStateConn-- : batteryPowerStateConn &= 0;
+        for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+          if(batteryPowerStateNotifyConnHdls[i] == conn_hdl) {
+            batteryPowerStateNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
+          }
+        }
+        if(batteryPowerStateConn < 1) {
+          isDeviceNotifyingBatteryPowerStateData = false;
+        }
+      }
     }
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    Serial.print("Battery Power State Element ");
+    Serial.print(i);
+    Serial.print(" ");
+    Serial.println(batteryPowerStateNotifyConnHdls[i]);
+  }
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    Serial.print("Encoder Data Element ");
+    Serial.print(i);
+    Serial.print(" ");
+    Serial.println(encoderNotifyConnHdls[i]);
+  }
 }
 
 void startAdv(void)
@@ -727,9 +792,24 @@ int32_t fn(uint32_t actualTime, float period, uint16_t heigth)
 
 void setup() {
 
+  // Configure Signal LED
+  signalLed.begin();
+  signalLed.show(); // Initialize all pixels to 'off'
+  signalLed.setPixelColor(0, 255, 255, 255);
+  signalLed.setBrightness(255);
+  signalLed.show();
+  delay(100);
+  ledAdvertisingOff();
+  signalLed.setPixelColor(0, 0, 255, 0);
+  signalLed.setBrightness(16);
+  signalLed.show();
+
   //Clean Connected devices table
   for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
     connectionHandles[i] = BLE_CONN_HANDLE_INVALID;
+    encoderNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
+    batteryNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
+    batteryPowerStateNotifyConnHdls[i] = BLE_CONN_HANDLE_INVALID;
   }
 
   // configure D7 as input with a pullup (pin is active low)
@@ -749,20 +829,8 @@ void setup() {
   attachInterrupt(BCD_CHARGER_PIN, chargerEventCbk, ISR_DEFERRED | CHANGE);
 
 
-  // Configure Signal LED
-  signalLed.begin();
-  signalLed.show(); // Initialize all pixels to 'off'
-  signalLed.setPixelColor(0, 255, 255, 255);
-  signalLed.setBrightness(255);
-  signalLed.show();
-  delay(100);
-  signalLed.setPixelColor(0, 0, 0, 0);
-  signalLed.setBrightness(255);
-  signalLed.show();
-
-  
   Serial.begin(115200);
-  while ( !Serial ) delay(10);   // for nrf52840 with native usb
+  //while ( !Serial ) delay(10);   // for nrf52840 with native usb
   Serial1.begin(115200);
   //mySerial.begin(115200);
   //mySerial.println("Chronojump serial port enabled!!");
@@ -811,6 +879,15 @@ void setup() {
   batteryBleChar.write8(vbat_per);
   batteryBleChar.notify8(vbat_per);
   
+
+  batteryBlePowerStateChar.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY); // could support notify
+  batteryBlePowerStateChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  batteryBlePowerStateChar.setFixedLen(1);
+  batteryBlePowerStateChar.setCccdWriteCallback(cccd_callback, true);
+  batteryBlePowerStateChar.begin();
+  batteryBlePowerStateChar.write8(B10001111);
+
+
   // Configure and Start the Device Information Service
   Serial.println("Configuring the Device Information Service");
   bledis.setManufacturer("Isoinercial");
@@ -845,8 +922,6 @@ void setup() {
   encoderwrite2.setFixedLen(1);
   encoderwrite2.begin();
  
-
-
   //Timer Creation related
   tm_blinkSignalLed.begin(500,blinkSignalLed_callback);
   Serial.print("Led timer handle ");
@@ -864,6 +939,15 @@ void setup() {
     tm_encoderChronoJumpSerial.start();
   }
 
+  tm_watchDogPowerOff.begin(TIMEOUT_POWEROFF, powerOff);
+  Serial.println("Power Off Timer enable");
+  tm_watchDogPowerOff.start();
+
+  // Call FTDI & USB poer state callbacks
+  powerenableEventCbk();
+  chargerEventCbk();
+
+  
   // Set up and start advertising
   startAdv();
   Bluefruit.printInfo();
@@ -880,8 +964,7 @@ void loop() {
 
   if(batteryVoltagePer != lastBatteryVoltagePer) {
       batteryBleChar.write8(batteryVoltagePer);
-      //batteryBleChar.notify8(batteryVoltagePer);
-      
+      //batteryBleChar.notify8(batteryVoltagePer);  
   }
 
   if(!isSimulatedState) {
@@ -923,8 +1006,8 @@ void loop() {
 
 void notifyAllDevices(const void* data, uint16_t len) {
   for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
-    if(connectionHandles[i] != BLE_CONN_HANDLE_INVALID) {
-      encoderread.notify(connectionHandles[i], data, len);
+    if(encoderNotifyConnHdls[i] != BLE_CONN_HANDLE_INVALID) {
+      encoderread.notify(encoderNotifyConnHdls[i], data, len);
     }
   }  
 }
@@ -932,16 +1015,34 @@ void notifyAllDevices(const void* data, uint16_t len) {
 void notifyBatteryAllDevices(uint8_t data) 
 {
   for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
-    if(connectionHandles[i] != BLE_CONN_HANDLE_INVALID) {
-      batteryBleChar.notify8(connectionHandles[i], data);
+    if(batteryNotifyConnHdls[i] != BLE_CONN_HANDLE_INVALID) {
+      batteryBleChar.notify8(batteryNotifyConnHdls[i], data);
+    }
+  }
+}
+
+void notifyBatteryPowerStateAllDevices(uint8_t data)
+{
+  for(uint8_t i=0;i<MAX_PRPH_CONNECTION;i++){
+    if(batteryPowerStateNotifyConnHdls[i] != BLE_CONN_HANDLE_INVALID) {
+      batteryBlePowerStateChar.notify8(batteryPowerStateNotifyConnHdls[i], data);
     }
   }
 }
 
 void digital_pushbutton_callback(void)
 {
+  uint8_t value;
+
+  value = digitalRead(INT_PIN);
   Serial.print("Pin value: ");
-  Serial.println(digitalRead(INT_PIN));
+  Serial.println(value);
+  if(value) {
+    BaseType_t active = xTimerIsTimerActive(tm_watchDogPowerOff.getHandle()); 
+    if(active) {
+      tm_watchDogPowerOff.reset();
+    }
+  }
 }
 
 void encoderEventCbk(void)
@@ -952,14 +1053,48 @@ void encoderEventCbk(void)
 
 void powerenableEventCbk(void)
 {
+  uint8_t value = digitalRead(PWREN_PIN);
   Serial.print("PWREN_PIN value: ");
-  Serial.println(digitalRead(PWREN_PIN));  
+  Serial.println(value);
+  usbConnectedStatus = true;
+  if(value == 0) {
+    if(digitalRead(BCD_CHARGER_PIN) == 0) {
+      usbConnectedStatus = false;
+    }
+  }
+  
+  //TODO: Notify about power State
+  //batteryPowerState |= (usbConnectedStatus ? ); 
+  //notifyBatteryPowerStateAllDevices(data);
 }
 
 void chargerEventCbk(void)
 {
+  uint8_t value = digitalRead(BCD_CHARGER_PIN);
   Serial.print("BCD_CHARGER_PIN value: ");
-  Serial.println(digitalRead(BCD_CHARGER_PIN));  
+  Serial.println(value);
+  if(value == 1) { //USB Power Enable
+    usbPowerStatus = true;
+    batteryDischargingStatus = false;
+    //Disable PowerOFF Timer
+    BaseType_t active = xTimerIsTimerActive(tm_watchDogPowerOff.getHandle()); 
+    if(active) {
+      tm_watchDogPowerOff.stop();
+    }
+
+  } else {
+    usbPowerStatus = false;
+    batteryDischargingStatus = true;
+    //Enable PowerOff Timer
+    tm_watchDogPowerOff.start();
+  } 
+
+  //Notify about power State
+  batteryPowerState &= 0B11001111; //Clear Charging bits
+  batteryPowerState |= (usbPowerStatus ? 0B00110000 : 0B00100000);
+  batteryPowerState &= 0B11110011; //Clear Discharging bits
+  batteryPowerState |= (batteryDischargingStatus ? 0B00001100 : 0B00001000);
+  notifyBatteryPowerStateAllDevices(batteryPowerState);
 }
 
 void ledAvertisingInit(void)
@@ -978,4 +1113,11 @@ void ledAvertisingConnected(void)
   signalLed.setPixelColor(0, 0, 0, 255);
   signalLed.setBrightness(16);
   signalLed.show();    
+}
+
+void ledAdvertisingOff(void)
+{
+  signalLed.setPixelColor(0, 0, 0, 0);
+  signalLed.setBrightness(255);
+  signalLed.show();
 }
