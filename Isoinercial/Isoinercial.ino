@@ -88,7 +88,7 @@
 #define SER_COMMAND_SOFT_VER        (0x56)        // 'V','86' ChronoJump Get software version
 
 
-#define MAX_PRPH_CONNECTION   3
+#define MAX_PRPH_CONNECTION   1
 
 
 LS7366 myLS7366(LS7366_CS_PIN);  
@@ -111,10 +111,10 @@ bool batteryDischargingStatus = true;
 bool usbConnectedStatus = false;
 
 uint8_t quadMode = QUADMOD4X;
-bool isIndexMode = true; //TODO: Change to false to production ready
+bool isIndexMode = false; //TODO: Change to false to production ready
 uint8_t numBytesMode = NUMBYTES4;
 
-bool isSerialEnable = true;
+bool isSerialEnable = false;
 bool isSimulatedState = false;
 
 uint8_t connection_count = 0;
@@ -244,6 +244,7 @@ void serial_chronojump_callback(TimerHandle_t xTimerID)
   (void) xTimerID;
   taskENTER_CRITICAL();
   Serial1.write(IncEncoderData);
+  Serial1.flush();
   IncEncoderData &= 0;
   taskEXIT_CRITICAL();
 }
@@ -257,7 +258,7 @@ void blinkSignalLed_callback(TimerHandle_t xTimerID)
 {
   static bool ledOn=false;
   (xTimerID);
-  uint8_t r,g,b;
+  uint8_t r=0,g=0,b=0;
 
   switch(connection_count) {
     case 0 : 
@@ -488,6 +489,24 @@ void connect_callback(uint16_t conn_handle)
   //Bluefruit.getPeerName(conn_handle, central_name, sizeof(central_name));
 
   BLEConnection* connection = Bluefruit.Connection(conn_handle);
+
+  // EXPERIMENTAL: request PHY changed to 2MB
+    Serial.println("Request to change PHY");
+    connection->requestPHY();
+
+    // request to update data length
+    Serial.println("Request to change Data Length");
+    connection->requestDataLengthUpdate();
+    
+    // request mtu exchange
+    Serial.println("Request to change MTU");
+    connection->requestMtuExchange(25);
+    
+    // request connection interval of 7.5 ms
+    //connection->requestConnectionParameter(20); // in unit of 1.25
+  
+    delay(1000);
+  
   connection->getPeerName(central_name,sizeof(central_name));
   
   // off Blue LED for lowest power consumption
@@ -851,8 +870,11 @@ void setup() {
   // Convert from raw mv to percentage (based on LIPO chemistry)
   uint8_t vbat_per = mvToPercent(batteryVoltageRaw * VBAT_MV_PER_LSB * VBAT_DIVIDER_COMP);
 
+  //Experimental to view if troughput go HIGH
+  Bluefruit.configPrphBandwidth(BANDWIDTH_MAX);  
+
   // Init Bluefruit
-  Bluefruit.begin(MAX_PRPH_CONNECTION);
+  Bluefruit.begin();
 
   Bluefruit.autoConnLed(true);
   Bluefruit.setConnLedInterval(100);
@@ -864,6 +886,9 @@ void setup() {
   // Set the connect/disconnect callback handlers
   Bluefruit.Periph.setConnectCallback(connect_callback);
   Bluefruit.Periph.setDisconnectCallback(disconnect_callback);
+
+  //Experimental
+  Bluefruit.Periph.setConnInterval(6, 12);
 
   
   // Start the BLE Battery Service and set it to their value
@@ -986,7 +1011,7 @@ void loop() {
       if(encoderPosition != lastEncoderPosition) {          
         //encoderread.notify(dummy_data,sizeof(dummy_data));
         notifyAllDevices(dummy_data, sizeof(dummy_data));
-        Serial.print(".");
+        //Serial.print(".");
       }
     }
 

@@ -1,5 +1,5 @@
 {
-    "port": "/dev/cu.usbmodem14524401",
+    "port": "/dev/cu.usbmodem1412401",
     "board": "adafruit:nrf52:feather52840",
     "configuration": "softdevice=s140v6,debug=l0",
     "sketch": "Isoinercial.ino"
