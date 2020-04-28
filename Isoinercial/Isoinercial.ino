@@ -379,6 +379,7 @@ const uint8_t BMU_UUID_SERVICE[]
 BLEDis            bledis; // DIS (Device Information Service) helper class instance
 BLEService        blebas = BLEService(BMU_UUID_SERVICE); //Need to connect to callbacks
 BLEService        bleencoders = BLEService(encoderservice);
+BLEDfu            bledfu;
 
 
 BLECharacteristic encoderread = BLECharacteristic(encoderreadcharac);
@@ -918,7 +919,10 @@ void setup() {
   //Experimental
   Bluefruit.Periph.setConnInterval(6, 12);
 
-  
+  //Start DFU
+  bledfu.begin();
+
+
   // Start the BLE Battery Service and set it to their value
   Serial.println("Configuring the Battery Service");
   blebas.begin();
