@@ -8,7 +8,8 @@
                 "${workspaceFolder}/Isoinercial",
                 "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.11.1/**",
                 "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.14.6/**",
-                "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.18.0/**"
+                "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.18.0/**",
+                "/Users/gopar/Library/Arduino15/packages/adafruit/hardware/nrf52/0.19.0/**"
             ],
             "forcedInclude": [],
             "macFrameworkPath": [

@@ -70,7 +70,12 @@
 #define COMMAND_ENCODER_OUTPUT_3    (0x33)        // '3','51' Command to put output encoder data to 3 bytes
 #define COMMAND_ENCODER_OUTPUT_4    (0x34)        // '4','52' Command to put output encoder data to 4 bytes
 #define COMMAND_DEFAULT_CONFIG      (0x21)        // '!','33' Command to put default configuration values
-#define COMMAND_SIMULATE_DATA       (0x25)        // '%'.'37' Command to put device in ouput simulated data
+#define COMMAND_SIMULATE_DATA       (0x25)        // '%','37' Command to put device in ouput simulated data
+#define COMMAND_SEND_INTERVAL_MAX   (0x4D)        // 'M','77' Command to send data at maximum velocity
+#define COMMAND_SEND_INTERVAL_25MS  (0xAC)        // '1/4','172' Command to send data at minimum 25ms intervals
+#define COMMAND_SEND_INTERVAL_30MS  (0xAD)        // '¡','173' Command to send data at minimum 30ms intervals
+#define COMMAND_SEND_INTERVAL_35MS  (0xAE)        // '<<','174' Command to send data at minimum 35ms intervals
+#define COMMAND_SEND_INTERVAL_50MS  (0xB1)        // Command to send data at minimum 50ms intervals
 
 #define COMMAND_SHUTDOWN            (0xDE)        // ''.'' Command to shutdown device
 
@@ -99,6 +104,7 @@ Adafruit_NeoPixel signalLed = Adafruit_NeoPixel(5, NEOMATRIX_LED_PIN, NEO_GRB + 
 // Application variables
 uint32_t encoderPosition = 0, lastEncoderPosition = 0;
 uint32_t timeelapsed = 0;
+uint32_t lastsentdata = 0;
 uint8_t lastBatteryVoltagePer = 0;
 int8_t volatile IncEncoderData = 0;
 uint8_t batteryPowerState = 0B10001111;//org.bluetooth.characteristic.battery_power_state
@@ -109,6 +115,7 @@ bool isDeviceNotifyingBatteryPowerStateData = false;
 bool usbPowerStatus = false;
 bool batteryDischargingStatus = true;
 bool usbConnectedStatus = false;
+uint8_t send_interval = 50; //define with send data interval is active (50 = ms, ..., 0 = max velocity)
 
 uint8_t quadMode = QUADMOD4X;
 bool isIndexMode = false; //TODO: Change to false to production ready
@@ -142,7 +149,7 @@ SoftwareTimer tm_watchDogPowerOff;
  * @param isIndexEnable if Index are used, must be true
  */
 
-void initEncoderChip(uint8_t quadratureMode = 4, bool isIndexEnable = false, uint8_t numBytes = 4)
+void initEncoderChip(uint8_t quadratureMode = 2, bool isIndexEnable = false, uint8_t numBytes = 4)
 {
   uint8_t register_0 = FILTER_1 | FREE_RUN | NQUAD;
   uint8_t register_1 = NO_FLAGS | EN_CNTR | BYTE_4;
@@ -399,9 +406,10 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
       }
       numBytesMode = NUMBYTES4;
       isIndexMode = false;
-      quadMode = QUADMOD4X;
+      quadMode = QUADMOD2X;
       initEncoderChip(quadMode,isIndexMode,numBytesMode);
       isSimulatedState = false;
+      send_interval = 50;
       break;
 
     case COMMAND_SIMULATE_DATA:
@@ -468,6 +476,26 @@ void write_command(uint16_t conn_hdl, BLECharacteristic* chr, uint8_t* data, uin
 
     case COMMAND_SHUTDOWN:
       powerOff(0);
+      break;
+    
+    case COMMAND_SEND_INTERVAL_MAX:
+      send_interval = 0;
+      break;
+
+    case COMMAND_SEND_INTERVAL_25MS:
+      send_interval = 25;
+      break;
+
+    case COMMAND_SEND_INTERVAL_30MS:
+      send_interval = 30;
+      break;
+
+    case COMMAND_SEND_INTERVAL_35MS:
+      send_interval = 35;
+      break;
+
+    case COMMAND_SEND_INTERVAL_50MS:
+      send_interval = 50;
       break;
     
     default:
@@ -1005,15 +1033,18 @@ void loop() {
   }
 
   //if (!Bluefruit.Advertising.isRunning()) {
-    
+  
     //Encoder related changes of data
-    if(isDeviceNotifyingEncoderData) { 
-      if(encoderPosition != lastEncoderPosition) {          
+  if(isDeviceNotifyingEncoderData) { 
+    if(encoderPosition != lastEncoderPosition) {
+      if((timeelapsed-lastsentdata) > send_interval){ //Put a break on transmission            
         //encoderread.notify(dummy_data,sizeof(dummy_data));
         notifyAllDevices(dummy_data, sizeof(dummy_data));
         //Serial.print(".");
+        lastsentdata = timeelapsed;
       }
     }
+  }
 
     //Battery related changes of data
     if(batteryVoltagePer != lastBatteryVoltagePer) {
